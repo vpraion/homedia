@@ -1,0 +1,151 @@
+# required packages : nvidia nvidia-utils nvidia-container-toolkit
+
+services:
+  init-folders:
+    image: alpine
+    container_name: init-folders
+    user: 1000:1000
+    command: >
+      sh -c "mkdir -p /media/anime /media/movie /media/tv /media/cartoon"
+    volumes:
+      - ./media:/media
+    restart: "no"
+
+  jellyfin:
+    image: jellyfin/jellyfin
+    container_name: jellyfin
+    user: 1000:1000
+    runtime: nvidia
+    ports:
+      - 8096:8096/tcp
+      - 7359:7359/udp
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      - ./media:/media:rw
+    networks:
+      - media-network
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Paris
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      - JELLYFIN_PublishedServerUrl=http://jellyfin.praion.com
+
+  qbittorrent:
+    image: linuxserver/qbittorrent
+    container_name: qbittorrent
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+      - WEBUI_PORT=8080
+    ports:
+      - 8080:8080
+      - 6881:6881
+      - 6881:6881/udp
+    volumes:
+      - qbittorrent-config:/config
+      - ./downloads:/downloads
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  prowlarr:
+    image: ghcr.io/linuxserver/prowlarr
+    container_name: prowlarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+    ports:
+      - 9696:9696
+    volumes:
+      - prowlarr-config:/config
+    restart: unless-stopped
+    networks:
+      - media-network
+    dns:
+      - 8.8.8.8 # Google DNS
+
+  sonarr:
+    image: ghcr.io/linuxserver/sonarr
+    container_name: sonarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+    volumes:
+      - sonarr-config:/config
+      - ./media:/media
+      - ./downloads:/downloads
+    ports:
+      - 8989:8989
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  radarr:
+    image: ghcr.io/linuxserver/radarr
+    container_name: radarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+    volumes:
+      - radarr-config:/config
+      - ./media:/media
+      - ./downloads:/downloads
+    ports:
+      - 7878:7878
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  encoder-base: # base service for encoders
+    image: ghcr.io/linuxserver/ffmpeg
+    runtime: runc # use runc runtime to run without GPU support
+    user: 1000:1000
+    volumes:
+      - ./media:/media
+      - ./scripts:/scripts:ro
+    working_dir: /scripts
+    cpuset: ${THREAD_PARK:-0-3} # 4 first threads by default
+    restart: "no"
+
+  encoder-anime:
+    extends:
+      service: encoder-base
+    container_name: encoder-anime
+    entrypoint: ["/scripts/auto-encode.sh", "--media=anime", "/media/anime"]
+
+  encoder-movie:
+    extends:
+      service: encoder-base
+    container_name: encoder-movie
+    entrypoint: ["/scripts/auto-encode.sh", "--media=movie", "/media/movies"]
+
+  encoder-tv:
+    extends:
+      service: encoder-base
+    container_name: encoder-tv
+    entrypoint: ["/scripts/auto-encode.sh", "--media=movie", "/media/tv"]
+
+  encoder-cartoon:
+    extends:
+      service: encoder-base
+    container_name: encoder-cartoon
+    entrypoint:
+      ["/scripts/auto-encode.sh", "--media=cartoon", "/media/cartoons"]
+
+volumes:
+  jellyfin-config:
+  jellyfin-cache:
+  qbittorrent-config:
+  prowlarr-config:
+  sonarr-config:
+  radarr-config:
+
+networks:
+  media-network:
+    driver: bridge
