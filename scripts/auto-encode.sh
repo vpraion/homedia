@@ -30,10 +30,10 @@ Examples:
 
 This script:
   - recursively scans the folder
-  - extracts width/height and video bitrate
-  - calculates a recommended AV1 bitrate for this media type,
-    scaling from a 1080p baseline using pixel count
-  - re-encodes to AV1 files whose bitrate is > 10% above the recommendation
+  - extracts width/height and video codec
+  - chooses a base AV1 CRF depending on media type
+  - slightly adjusts CRF based on pixel count vs 1080p
+  - re-encodes to AV1 (libsvtav1) ONLY if video is not already AV1
 EOF
 }
 
@@ -81,10 +81,9 @@ case "$MEDIA_KIND" in
     ;;
 esac
 
-echo -e "${BOLD}=== Bitrate / Resolution Analysis ===${RESET}"
+echo -e "${BOLD}=== AV1 / CRF re-encoding ===${RESET}"
 echo -e "Media type : ${CYAN}$MEDIA_KIND${RESET}"
 echo -e "Folder     : ${CYAN}$ROOT_DIR${RESET}"
-echo -e "Threshold  : ${YELLOW}+10% above recommended bitrate${RESET}"
 echo
 
 ############################################
@@ -119,68 +118,6 @@ fi
 # Utility functions
 ############################################
 
-# Retrieve video bitrate in kb/s (video-only if possible)
-get_video_bitrate_kbps() {
-  local file="$1"
-
-  # 1) Duration in seconds (float)
-  local duration
-  duration=$(ffprobe -v error \
-    -show_entries format=duration \
-    -of csv=p=0 \
-    "$file" 2>/dev/null)
-
-  duration=${duration%%,*}  # remove trailing CSV stuff
-
-  if [[ -z "$duration" || "$duration" == "N/A" || "$duration" == "0" ]]; then
-    echo ""
-    return
-  fi
-
-  # 2) File size in bytes
-  local size
-  size=$(stat -c%s "$file" 2>/dev/null || echo "")
-  if [[ -z "$size" || "$size" == "0" ]]; then
-    echo ""
-    return
-  fi
-
-  # 3) Total bitrate (all streams) in kb/s
-  local total_kbps
-  total_kbps=$(awk -v size="$size" -v dur="$duration" \
-    'BEGIN { if (dur > 0) printf "%d", ((size*8)/1000)/dur; }')
-
-  if [[ -z "$total_kbps" || "$total_kbps" == "0" ]]; then
-    echo ""
-    return
-  fi
-
-  # 4) Sum of audio bitrates (if available)
-  local audio_bits
-  audio_bits=$(ffprobe -v error \
-    -select_streams a \
-    -show_entries stream=bit_rate \
-    -of csv=p=0 \
-    "$file" 2>/dev/null \
-    | awk 'NF && $1 != "N/A" { s+=$1 } END { print s+0 }')
-
-  if [[ -n "$audio_bits" && "$audio_bits" -gt 0 ]]; then
-    local audio_kbps
-    audio_kbps=$(awk -v ab="$audio_bits" 'BEGIN { printf "%d", ab/1000 }')
-
-    local video_kbps=$(( total_kbps - audio_kbps ))
-
-    if (( video_kbps > 0 )); then
-      echo "$video_kbps"
-      return
-    fi
-  fi
-
-  # Fallback: if audio bitrate not available, return total
-  echo "$total_kbps"
-}
-
-
 # Retrieve width & height (pixels)
 get_video_dimensions() {
   local file="$1"
@@ -214,38 +151,88 @@ resolution_label_from_height() {
   fi
 }
 
-# Recommended bitrate (kb/s) by media type + pixel count
-get_recommended_bitrate_kbps() {
+# Get video codec name (v:0)
+get_video_codec() {
+  local file="$1"
+  ffprobe -v error \
+    -select_streams v:0 \
+    -show_entries stream=codec_name \
+    -of csv=p=0 \
+    "$file" 2>/dev/null || echo ""
+}
+
+# Base CRF by media type
+choose_base_crf() {
   local media="$1"
-  local pixels="$2"
+  local base_crf
 
-  # 1920x1080
-  local ref_pixels=2073600
-
-  local base_1080
   case "$media" in
     anime)
-      base_1080=2500
-      ;;
-    movie)
-      base_1080=4000
+      # animes encodent très bien → CRF assez haut
+      base_crf=31
       ;;
     cartoon)
-      base_1080=1700
+      # cartoons encore plus simples
+      base_crf=32
+      ;;
+    movie)
+      # films live action → CRF un peu plus bas
+      base_crf=28
       ;;
     *)
-      base_1080=2500
+      base_crf=28
       ;;
   esac
 
-  local reco=$(( base_1080 * pixels / ref_pixels ))
+  echo "$base_crf"
+}
 
-  if (( reco < 500 )); then
-    reco=500
+# Adjust CRF based on resolution buckets around 1080p
+adjust_crf_by_pixels() {
+  local base_crf="$1"
+  local pixels="$2"
+
+  # 1920x1080 pixels
+  local ref_pixels=2073600
+
+  # integer ratio vs 1080p (x100)
+  local ratio=$(( pixels * 100 / ref_pixels ))
+  local crf="$base_crf"
+
+  # Approx:
+  #  - <= 50%  ~ <= 720x576, SD / petites résolutions
+  #  - 50–80%  ~ 720p-ish
+  #  - 80–130% ~ autour de 1080p
+  #  - 130–200% ~ entre 1080p et 1440p / UWQHD
+  #  - > 200%  ~ 4K et plus
+
+  if   (( ratio <= 50 )); then
+    # très peu de pixels → on baisse un peu le CRF (moins de compression)
+    crf=$(( crf - 2 ))
+  elif (( ratio <= 80 )); then
+    # un peu en dessous de 1080p → petit -1
+    crf=$(( crf - 1 ))
+  elif (( ratio <= 130 )); then
+    # autour de 1080p → on garde le CRF
+    crf=$base_crf
+  elif (( ratio <= 200 )); then
+    # un peu au-dessus (1440p / UWQHD) → +1
+    crf=$(( crf + 1 ))
+  else
+    # 4K et au-delà → +2
+    crf=$(( crf + 2 ))
   fi
 
-  echo "$reco"
+  # clamp de sécurité
+  if (( crf < 18 )); then
+    crf=18
+  elif (( crf > 40 )); then
+    crf=40
+  fi
+
+  echo "$crf"
 }
+
 
 ############################################
 # File scanning
@@ -256,12 +243,9 @@ echo
 
 found_any=false
 count_total=0
-count_candidates=0
 count_skipped_meta=0
+count_already_av1=0
 count_reencoded=0
-
-total_bitrate=0
-total_reco=0
 
 pattern_expr=()
 for ext in "${VIDEO_EXTENSIONS[@]}"; do
@@ -275,10 +259,10 @@ while IFS= read -r -d '' file; do
   found_any=true
 
   dims=$(get_video_dimensions "$file")
-  bitrate_kbps=$(get_video_bitrate_kbps "$file")
+  codec=$(get_video_codec "$file")
 
-  if [ -z "$dims" ] || [ -z "$bitrate_kbps" ]; then
-    echo -e "[${YELLOW}SKIP${RESET}] Missing metadata (dims/bitrate): $file"
+  if [ -z "$dims" ] || [ -z "$codec" ]; then
+    echo -e "[${YELLOW}SKIP${RESET}] Missing metadata (dims/codec): $file"
     ((count_skipped_meta++))
     continue
   fi
@@ -288,48 +272,49 @@ while IFS= read -r -d '' file; do
   IFS='x' read -r width height <<< "$dims"
   pixels=$(( width * height ))
   label=$(resolution_label_from_height "$height")
-  reco_kbps=$(get_recommended_bitrate_kbps "$MEDIA_KIND" "$pixels")
-
-  threshold=$(( reco_kbps + (reco_kbps / 10) ))
-
-  total_bitrate=$(( total_bitrate + bitrate_kbps ))
-  total_reco=$(( total_reco + reco_kbps ))
 
   echo -e "${MAGENTA}----------------------------------------${RESET}"
   echo -e "${BOLD}File       :${RESET} $file"
   echo -e "${BOLD}Resolution :${RESET} ${CYAN}${width}x${height}${RESET} (${pixels} pixels) → ${CYAN}$label${RESET}"
-  echo -e "${BOLD}Bitrate    :${RESET} ${YELLOW}${bitrate_kbps} kb/s${RESET}"
-  echo -e "${BOLD}Reco $MEDIA_KIND:${RESET} ${GREEN}${reco_kbps} kb/s${RESET} (threshold +10%: ${GREEN}${threshold} kb/s${RESET})"
+  echo -e "${BOLD}Codec      :${RESET} ${CYAN}${codec}${RESET}"
 
-  if (( bitrate_kbps > threshold )); then
-    echo -e "→ Status    : ${RED}OVERSIZED${RESET} (AV1 re-encode candidate)"
-    ((count_candidates++))
+  # Skip if already AV1
+  case "$codec" in
+    av1|av01)
+      echo -e "→ Status    : ${GREEN}ALREADY AV1${RESET} (skipping)"
+      ((count_already_av1++))
+      continue
+      ;;
+  esac
 
-    ext="${file##*.}"
-    tmp_file="${file%.*}.av1tmp.${ext}"
+  base_crf=$(choose_base_crf "$MEDIA_KIND")
+  crf=$(adjust_crf_by_pixels "$base_crf" "$pixels")
 
-    echo -e "  ${CYAN}→ Re-encoding to AV1 at ${reco_kbps} kb/s...${RESET}"
+  echo -e "→ Status    : ${MAGENTA}RE-ENCODE${RESET} to AV1 (libsvtav1)"
+  echo -e "  ${BOLD}Base CRF   :${RESET} ${CYAN}${base_crf}${RESET}"
+  echo -e "  ${BOLD}Final CRF  :${RESET} ${GREEN}${crf}${RESET}"
 
-    if ffmpeg -hide_banner -loglevel error -stats -nostdin \
-      -y -i "$file" \
-      -map 0 \
-      -c copy \
-      -c:v:0 libsvtav1 \
-      -b:v:0 "${reco_kbps}k" \
-      -preset 6 \
-      "$tmp_file" \
-      2> >(sed '/^Svt\[info\]:/d; /^SvtMalloc\[info\]:/d' >&2)
-    then
-      echo -e "  ${GREEN}✅ Encoding complete, replacing original file...${RESET}"
-      mv -- "$tmp_file" "$file"
-      ((count_reencoded++))
-    else
-      echo -e "  ${RED}❌ Encoding failed, original file kept.${RESET}"
-      rm -f -- "$tmp_file"
-    fi
+  ext="${file##*.}"
+  tmp_file="${file%.*}.av1tmp.${ext}"
 
+  if ffmpeg -hide_banner -loglevel error -stats -nostdin \
+    -y -i "$file" \
+    -map 0 \
+    -c:v:0 libsvtav1 \
+    -c:a copy \
+    -c:s copy \
+    -fflags +genpts \
+    -crf:v:0 "$crf" \
+    -preset 6 \
+    "$tmp_file" \
+    2> >(sed '/^Svt\[info\]:/d; /^SvtMalloc\[info\]:/d' >&2)
+  then
+    echo -e "  ${GREEN}✅ Encoding complete, replacing original file...${RESET}"
+    mv -- "$tmp_file" "$file"
+    ((count_reencoded++))
   else
-    echo -e "→ Status    : ${GREEN}OK${RESET} (within recommended range)"
+    echo -e "  ${RED}❌ Encoding failed, original file kept.${RESET}"
+    rm -f -- "$tmp_file"
   fi
 
 done < <(
@@ -345,23 +330,11 @@ if [ "$found_any" = false ]; then
   exit 0
 fi
 
-echo -e "Videos analyzed                        : ${CYAN}$count_total${RESET}"
-echo -e "Files skipped (missing metadata)       : ${YELLOW}$count_skipped_meta${RESET}"
-echo -e "Re-encode candidates (> +10%)          : ${MAGENTA}$count_candidates${RESET}"
-echo -e "Files re-encoded                       : ${GREEN}$count_reencoded${RESET}"
-
-if (( count_total > 0 )); then
-  avg_bitrate=$(( total_bitrate / count_total ))
-  avg_reco=$(( total_reco / count_total ))
-
-  avg_bitrate_mbit=$(awk "BEGIN { printf \"%.2f\", $avg_bitrate / 1000 }")
-  avg_reco_mbit=$(awk "BEGIN { printf \"%.2f\", $avg_reco / 1000 }")
-
-  echo
-  echo -e "${BOLD}Average real bitrate:${RESET} ${YELLOW}${avg_bitrate} kb/s${RESET} (~${YELLOW}${avg_bitrate_mbit} Mb/s${RESET})"
-  echo -e "${BOLD}Average recommended  :${RESET} ${GREEN}${avg_reco} kb/s${RESET} (~${GREEN}${avg_reco_mbit} Mb/s${RESET})"
-fi
+echo -e "Videos analyzed                 : ${CYAN}$count_total${RESET}"
+echo -e "Files skipped (missing metadata): ${YELLOW}$count_skipped_meta${RESET}"
+echo -e "Already AV1 (skipped)           : ${GREEN}$count_already_av1${RESET}"
+echo -e "Files re-encoded to AV1         : ${MAGENTA}$count_reencoded${RESET}"
 
 echo
-echo -e "${BOLD}=== End of analysis + AV1 re-encoding ===${RESET}"
+echo -e "${BOLD}=== End of AV1 / CRF re-encoding ===${RESET}"
 exit 0

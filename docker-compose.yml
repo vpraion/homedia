@@ -6,7 +6,7 @@ services:
     container_name: init-folders
     user: 1000:1000
     command: >
-      sh -c "mkdir -p /media/anime /media/movie /media/tv /media/cartoon"
+      sh -c "mkdir -p /media/anime /media/movies /media/tv /media/cartoons"
     volumes:
       - ./media:/media
     restart: "no"
