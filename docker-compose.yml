@@ -33,6 +33,16 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
       - JELLYFIN_PublishedServerUrl=http://jellyfin.praion.com
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sS http://localhost:8096/ >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   qbittorrent:
     image: linuxserver/qbittorrent
@@ -52,6 +62,16 @@ services:
     restart: unless-stopped
     networks:
       - media-network
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sS http://localhost:8080/ >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
 
   prowlarr:
     image: ghcr.io/linuxserver/prowlarr
@@ -69,6 +89,19 @@ services:
       - media-network
     dns:
       - 8.8.8.8 # Google DNS
+    depends_on:
+      qbittorrent:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sS http://localhost:9696/ >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
 
   sonarr:
     image: ghcr.io/linuxserver/sonarr
@@ -88,6 +121,21 @@ services:
     restart: unless-stopped
     networks:
       - media-network
+    depends_on:
+      qbittorrent:
+        condition: service_healthy
+      prowlarr:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sS http://localhost:8989/ >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
 
   radarr:
     image: ghcr.io/linuxserver/radarr
@@ -107,6 +155,21 @@ services:
     restart: unless-stopped
     networks:
       - media-network
+    depends_on:
+      qbittorrent:
+        condition: service_healthy
+      prowlarr:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sS http://localhost:7878/ >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
 
   encoder-base: # base service for encoders
     image: ghcr.io/linuxserver/ffmpeg
