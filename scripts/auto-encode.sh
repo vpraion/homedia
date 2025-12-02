@@ -287,6 +287,24 @@ while IFS= read -r -d '' file; do
       ;;
   esac
 
+  # Guess container format from file extension
+guess_container_format() {
+  local file="$1"
+  local ext="${file##*.}"
+
+  case "${ext,,}" in
+    mkv)  echo "matroska" ;;
+    mp4|m4v|mov) echo "mp4" ;;
+    webm) echo "webm" ;;
+    ts)   echo "mpegts" ;;
+    avi)  echo "avi" ;;
+    *)
+      echo ""  # ffmpeg essaiera de deviner, ou échouera
+      ;;
+  esac
+}
+
+
   base_crf=$(choose_base_crf "$MEDIA_KIND")
   crf=$(adjust_crf_by_pixels "$base_crf" "$pixels")
 
@@ -294,8 +312,11 @@ while IFS= read -r -d '' file; do
   echo -e "  ${BOLD}Base CRF   :${RESET} ${CYAN}${base_crf}${RESET}"
   echo -e "  ${BOLD}Final CRF  :${RESET} ${GREEN}${crf}${RESET}"
 
-  ext="${file##*.}"
-  tmp_file="${file%.*}.av1tmp.${ext}"
+  # Fichier temporaire ignoré par Jellyfin
+  tmp_file="${file}.tmp"
+
+    # Deviner le format de conteneur pour ffmpeg
+  container_format=$(guess_container_format "$file")
 
   if ffmpeg -hide_banner -loglevel error -stats -nostdin \
     -y -i "$file" \
@@ -306,6 +327,7 @@ while IFS= read -r -d '' file; do
     -fflags +genpts \
     -crf:v:0 "$crf" \
     -preset 6 \
+    ${container_format:+-f "$container_format"} \
     "$tmp_file" \
     2> >(sed '/^Svt\[info\]:/d; /^SvtMalloc\[info\]:/d' >&2)
   then
