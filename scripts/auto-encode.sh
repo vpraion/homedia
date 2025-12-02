@@ -176,11 +176,11 @@ choose_base_crf() {
       base_crf=32
       ;;
     movie)
-      # films live action → CRF un peu plus bas
-      base_crf=28
+      # films live action → CRF plus bas
+      base_crf=26
       ;;
     *)
-      base_crf=28
+      base_crf=26
       ;;
   esac
 

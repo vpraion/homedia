@@ -6,7 +6,7 @@ services:
     container_name: init-folders
     user: 1000:1000
     command: >
-      sh -c "mkdir -p /media/anime /media/movies /media/tv /media/cartoons"
+      sh -c "mkdir -p /media/{disk-base,disk1,disk2}/{anime,cartoons,movies,tv}"
     volumes:
       - ./media:/media
     restart: "no"
@@ -22,7 +22,9 @@ services:
     volumes:
       - jellyfin-config:/config
       - jellyfin-cache:/cache
-      - ./media:/media:rw
+      - ./media/disk-base:/media/disk-base:rw
+      - /mnt/media1:/media/disk1
+      - /mnt/media2:/media/disk2
     networks:
       - media-network
     restart: unless-stopped
@@ -77,8 +79,10 @@ services:
       - TZ=Europe/Paris
     volumes:
       - sonarr-config:/config
-      - ./media:/media
+      - ./media/disk-base:/media/disk-base
       - ./downloads:/downloads
+      - /mnt/media1:/media/disk1
+      - /mnt/media2:/media/disk2
     ports:
       - 8989:8989
     restart: unless-stopped
@@ -94,7 +98,9 @@ services:
       - TZ=Europe/Paris
     volumes:
       - radarr-config:/config
-      - ./media:/media
+      - ./media/disk-base:/media/disk-base
+      - /mnt/media1:/media/disk1
+      - /mnt/media2:/media/disk2
       - ./downloads:/downloads
     ports:
       - 7878:7878
@@ -107,36 +113,114 @@ services:
     runtime: runc # use runc runtime to run without GPU support
     user: 1000:1000
     volumes:
-      - ./media:/media
+      - ./media/disk-base/:/media/disk-base
+      - /mnt/media1:/media/disk1
+      - /mnt/media2:/media/disk2
       - ./scripts:/scripts:ro
     working_dir: /scripts
     cpuset: ${THREAD_PARK:-0-3} # 4 first threads by default
     restart: "no"
 
-  encoder-anime:
+  encoder-anime-base:
     extends:
       service: encoder-base
-    container_name: encoder-anime
-    entrypoint: ["/scripts/auto-encode.sh", "--media=anime", "/media/anime"]
 
-  encoder-movie:
+  encoder-anime-disk-base:
     extends:
-      service: encoder-base
-    container_name: encoder-movie
-    entrypoint: ["/scripts/auto-encode.sh", "--media=movie", "/media/movies"]
-
-  encoder-tv:
-    extends:
-      service: encoder-base
-    container_name: encoder-tv
-    entrypoint: ["/scripts/auto-encode.sh", "--media=movie", "/media/tv"]
-
-  encoder-cartoon:
-    extends:
-      service: encoder-base
-    container_name: encoder-cartoon
+      service: encoder-anime-base
+    container_name: encoder-anime-disk-base
     entrypoint:
-      ["/scripts/auto-encode.sh", "--media=cartoon", "/media/cartoons"]
+      ["/scripts/auto-encode.sh", "--media=anime", "/media/disk-base/anime"]
+
+  encoder-anime-disk1:
+    extends:
+      service: encoder-anime-base
+    container_name: encoder-anime-disk1
+    entrypoint:
+      ["/scripts/auto-encode.sh", "--media=anime", "/media/disk1/anime"]
+
+  encoder-anime-disk2:
+    extends:
+      service: encoder-anime-base
+    container_name: encoder-anime-disk2
+    entrypoint:
+      ["/scripts/auto-encode.sh", "--media=anime", "/media/disk2/anime"]
+
+  encoder-movie-base:
+    extends:
+      service: encoder-base
+
+  encoder-movie-disk-base:
+    extends:
+      service: encoder-movie-base
+    container_name: encoder-movie-disk-base
+    entrypoint:
+      ["/scripts/auto-encode.sh", "--media=movie", "/media/disk-base/movies"]
+
+  encoder-movie-disk1:
+    extends:
+      service: encoder-movie-base
+    container_name: encoder-movie-disk1
+    entrypoint:
+      ["/scripts/auto-encode.sh", "--media=movie", "/media/disk1/movies"]
+
+  encoder-movie-disk2:
+    extends:
+      service: encoder-movie-base
+    container_name: encoder-movie-disk2
+    entrypoint:
+      ["/scripts/auto-encode.sh", "--media=movie", "/media/disk2/movies"]
+
+  encoder-tv-base:
+    extends:
+      service: encoder-base
+
+  encoder-tv-disk-base:
+    extends:
+      service: encoder-tv-base
+    container_name: encoder-tv-disk-base
+    entrypoint: ["/scripts/auto-encode.sh", "--media=tv", "/media/disk-base/tv"]
+
+  encoder-tv-disk1:
+    extends:
+      service: encoder-tv-base
+    container_name: encoder-tv-disk1
+    entrypoint: ["/scripts/auto-encode.sh", "--media=tv", "/media/disk1/tv"]
+
+  encoder-tv-disk2:
+    extends:
+      service: encoder-tv-base
+    container_name: encoder-tv-disk2
+    entrypoint: ["/scripts/auto-encode.sh", "--media=tv", "/media/disk2/tv"]
+
+  encoder-cartoon-base:
+    extends:
+      service: encoder-base
+
+  encoder-cartoon-disk-base:
+    extends:
+      service: encoder-cartoon-base
+    container_name: encoder-cartoon-disk-base
+    entrypoint:
+      [
+        "/scripts/auto-encode.sh",
+        "--media=cartoon",
+        "/media/disk-base/cartoons",
+      ]
+
+  encoder-cartoon-disk1:
+    extends:
+      service: encoder-cartoon-base
+    container_name: encoder-cartoon-disk1
+    entrypoint:
+      ["/scripts/auto-encode.sh", "--media=cartoon", "/media/disk1/cartoons"]
+
+  encoder-cartoon-disk2:
+    extends:
+      service: encoder-cartoon-base
+    container_name: encoder-cartoon-disk2
+    entrypoint:
+      ["/scripts/auto-encode.sh", "--media=cartoon", "/media/disk2/cartoons"]
 
 volumes:
   jellyfin-config:
