@@ -261,6 +261,13 @@ while IFS= read -r -d '' file; do
   dims=$(get_video_dimensions "$file")
   codec=$(get_video_codec "$file")
 
+  # Nettoyage de sécurité : enlever virgules, espaces, retours chariot, mettre en minuscule
+  codec=${codec%%,*}                     # garde tout avant la première virgule
+  codec=${codec//$'\r'/}                 # vire éventuels \r
+  codec=${codec//[[:space:]]/}           # vire espaces et tabs
+  codec=${codec,,}                       # to lower-case (bash 4+)
+
+
   if [ -z "$dims" ] || [ -z "$codec" ]; then
     echo -e "[${YELLOW}SKIP${RESET}] Missing metadata (dims/codec): $file"
     ((count_skipped_meta++))
